@@ -1,0 +1,231 @@
+{
+    "image_name": "img000074",
+    "image_size_wh": [
+        1920,
+        1200
+    ],
+    "success": true,
+    "translation": {
+        "x": -12.655349970482085,
+        "y": -8.06486666969334,
+        "z": 48.84613172656689
+    },
+    "rotation_matrix": [
+        [
+            -0.5786332582718304,
+            0.4557684245028496,
+            0.676356929178607
+        ],
+        [
+            0.7790127177392255,
+            0.5544097881727195,
+            0.29286340225235596
+        ],
+        [
+            -0.24150101039596217,
+            0.6963511542350381,
+            -0.6758493411798664
+        ]
+    ],
+    "rotation_vector": [
+        0.9908061014862326,
+        2.2538955454268597,
+        0.7937599504208802
+    ],
+    "euler_angles_degrees": {
+        "roll": 134.14401724114222,
+        "pitch": 13.975148151179125,
+        "yaw": 126.6041407888784
+    },
+    "ransac": {
+        "iterations": 2000,
+        "reprojection_threshold_px": 5.0,
+        "confidence": 0.999,
+        "num_input_points": 11,
+        "num_inliers": 9,
+        "num_outliers": 2,
+        "inlier_keypoints": [
+            0,
+            1,
+            2,
+            3,
+            5,
+            6,
+            8,
+            9,
+            10
+        ]
+    },
+    "reprojection_error": {
+        "mean_px": 3.556169033050537,
+        "median_px": 2.126339912414551,
+        "max_px": 12.805920600891113
+    },
+    "keypoints": [
+        {
+            "keypoint_id": 0,
+            "predicted_2d": [
+                198.0,
+                78.0
+            ],
+            "reprojected_2d": [
+                198.93106079101562,
+                79.94034576416016
+            ],
+            "reprojection_error_px": 2.152165412902832,
+            "heatmap_peak": 1.0952140092849731,
+            "visibility": 0.8084253668785095,
+            "ransac_inlier": true
+        },
+        {
+            "keypoint_id": 1,
+            "predicted_2d": [
+                226.0,
+                110.0
+            ],
+            "reprojected_2d": [
+                227.84085083007812,
+                111.0642318725586
+            ],
+            "reprojection_error_px": 2.126339912414551,
+            "heatmap_peak": 1.0290169715881348,
+            "visibility": 0.8006225824356079,
+            "ransac_inlier": true
+        },
+        {
+            "keypoint_id": 2,
+            "predicted_2d": [
+                198.0,
+                145.0
+            ],
+            "reprojected_2d": [
+                199.16822814941406,
+                144.49899291992188
+            ],
+            "reprojection_error_px": 1.271127462387085,
+            "heatmap_peak": 0.9868919849395752,
+            "visibility": 0.7919955849647522,
+            "ransac_inlier": true
+        },
+        {
+            "keypoint_id": 3,
+            "predicted_2d": [
+                170.0,
+                113.0
+            ],
+            "reprojected_2d": [
+                169.85231018066406,
+                113.59346008300781
+            ],
+            "reprojection_error_px": 0.6115612387657166,
+            "heatmap_peak": 0.8835496306419373,
+            "visibility": 0.8088968992233276,
+            "ransac_inlier": true
+        },
+        {
+            "keypoint_id": 4,
+            "predicted_2d": [
+                197.0,
+                145.0
+            ],
+            "reprojected_2d": [
+                186.47659301757812,
+                137.70277404785156
+            ],
+            "reprojection_error_px": 12.805920600891113,
+            "heatmap_peak": 0.7895612120628357,
+            "visibility": 0.7827364206314087,
+            "ransac_inlier": false
+        },
+        {
+            "keypoint_id": 5,
+            "predicted_2d": [
+                166.0,
+                117.0
+            ],
+            "reprojected_2d": [
+                164.88754272460938,
+                114.9945068359375
+            ],
+            "reprojection_error_px": 2.2933738231658936,
+            "heatmap_peak": 1.0578813552856445,
+            "visibility": 0.7713261842727661,
+            "ransac_inlier": true
+        },
+        {
+            "keypoint_id": 6,
+            "predicted_2d": [
+                197.0,
+                82.0
+            ],
+            "reprojected_2d": [
+                193.7986602783203,
+                81.54546356201172
+            ],
+            "reprojection_error_px": 3.2334468364715576,
+            "heatmap_peak": 0.6648510098457336,
+            "visibility": 0.7639821171760559,
+            "ransac_inlier": true
+        },
+        {
+            "keypoint_id": 7,
+            "predicted_2d": [
+                225.0,
+                110.0
+            ],
+            "reprojected_2d": [
+                215.08999633789062,
+                104.41311645507812
+            ],
+            "reprojection_error_px": 11.376355171203613,
+            "heatmap_peak": 0.6795294880867004,
+            "visibility": 0.7745532393455505,
+            "ransac_inlier": false
+        },
+        {
+            "keypoint_id": 8,
+            "predicted_2d": [
+                237.0,
+                106.0
+            ],
+            "reprojected_2d": [
+                236.23355102539062,
+                106.68794250488281
+            ],
+            "reprojection_error_px": 1.0299072265625,
+            "heatmap_peak": 1.121050477027893,
+            "visibility": 0.8180444240570068,
+            "ransac_inlier": true
+        },
+        {
+            "keypoint_id": 9,
+            "predicted_2d": [
+                194.0,
+                157.0
+            ],
+            "reprojected_2d": [
+                194.45535278320312,
+                155.69728088378906
+            ],
+            "reprojection_error_px": 1.3800084590911865,
+            "heatmap_peak": 1.0913505554199219,
+            "visibility": 0.8155662417411804,
+            "ransac_inlier": true
+        },
+        {
+            "keypoint_id": 10,
+            "predicted_2d": [
+                162.0,
+                102.0
+            ],
+            "reprojected_2d": [
+                162.8374481201172,
+                101.98153686523438
+            ],
+            "reprojection_error_px": 0.8376516103744507,
+            "heatmap_peak": 1.0832140445709229,
+            "visibility": 0.814231812953949,
+            "ransac_inlier": true
+        }
+    ]
+}

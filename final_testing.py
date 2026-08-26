@@ -29,6 +29,7 @@ Or for one image:
 """
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -39,6 +40,7 @@ import torchvision.models as models
 import torchvision.transforms as T
 from PIL import Image
 import matplotlib.pyplot as plt
+from final_train import MobileNetMultiTaskNet
 
 
 # ============================================================
@@ -60,148 +62,6 @@ TRANSFORM = T.Compose([
         std=[0.229, 0.224, 0.225],
     ),
 ])
-
-
-# ============================================================
-# Model -- must match the training architecture exactly
-# ============================================================
-
-class MobileNetMultiTaskNet(nn.Module):
-    """
-    Same MobileNetV2 + FPN/U-Net-style architecture used during training.
-
-    The training model taps MobileNetV2 layers 3, 6, 13 and 18,
-    fuses them through an FPN decoder, and produces:
-        heatmaps:     (B, 11, 240, 384)
-        vis_logits:   (B, 11)
-    """
-
-    SKIP_LAYERS = {
-        3: (24, 4),
-        6: (32, 8),
-        13: (96, 16),
-        18: (1280, 32),
-    }
-
-    def __init__(
-        self,
-        num_keypoints=11,
-        pretrained=False,
-        fpn_channels=128,
-        target_heatmap_size=(240, 384),
-    ):
-        super().__init__()
-
-        # pretrained=False is intentional here because the checkpoint
-        # contains the trained weights. We only need the architecture.
-        mobilenet = models.mobilenet_v2(
-            weights="IMAGENET1K_V2" if pretrained else None
-        )
-
-        self.backbone_layers = nn.ModuleList(
-            list(mobilenet.features.children())
-        )
-
-        self.target_heatmap_size = target_heatmap_size
-        self.deepest_idx = max(self.SKIP_LAYERS.keys())
-
-        self.lateral_convs = nn.ModuleDict({
-            str(idx): nn.Conv2d(
-                ch, fpn_channels, kernel_size=1
-            )
-            for idx, (ch, _stride) in self.SKIP_LAYERS.items()
-        })
-
-        self.smooth_convs = nn.ModuleDict({
-            str(idx): nn.Conv2d(
-                fpn_channels,
-                fpn_channels,
-                kernel_size=3,
-                padding=1,
-            )
-            for idx in self.SKIP_LAYERS
-            if idx != self.deepest_idx
-        })
-
-        self.heatmap_head = nn.Sequential(
-            nn.Conv2d(
-                fpn_channels,
-                fpn_channels,
-                kernel_size=3,
-                padding=1,
-            ),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(
-                fpn_channels,
-                num_keypoints,
-                kernel_size=1,
-            ),
-        )
-
-        deepest_channels = self.SKIP_LAYERS[self.deepest_idx][0]
-
-        self.vis_pool = nn.AdaptiveAvgPool2d(1)
-
-        self.vis_head = nn.Sequential(
-            nn.Linear(deepest_channels, 128),
-            nn.ReLU(inplace=True),
-            nn.Linear(128, num_keypoints),
-        )
-
-    def forward(self, x):
-        skip_feats = {}
-        h = x
-
-        for i, layer in enumerate(self.backbone_layers):
-            h = layer(h)
-
-            if i in self.SKIP_LAYERS:
-                skip_feats[i] = h
-
-            if i == self.deepest_idx:
-                break
-
-        deep_feat = skip_feats[self.deepest_idx]
-
-        sorted_idx = sorted(
-            self.SKIP_LAYERS.keys(),
-            reverse=True
-        )
-
-        fused = self.lateral_convs[str(sorted_idx[0])](
-            skip_feats[sorted_idx[0]]
-        )
-
-        for idx in sorted_idx[1:]:
-            lateral = self.lateral_convs[str(idx)](
-                skip_feats[idx]
-            )
-
-            fused_upsampled = F.interpolate(
-                fused,
-                size=lateral.shape[-2:],
-                mode="bilinear",
-                align_corners=False,
-            )
-
-            fused = self.smooth_convs[str(idx)](
-                fused_upsampled + lateral
-            )
-
-        heatmaps = self.heatmap_head(fused)
-
-        heatmaps = F.interpolate(
-            heatmaps,
-            size=self.target_heatmap_size,
-            mode="bilinear",
-            align_corners=False,
-        )
-
-        v = self.vis_pool(deep_feat).flatten(1)
-        vis_logits = self.vis_head(v)
-
-        return heatmaps, vis_logits
-
 
 # ============================================================
 # Checkpoint loading
@@ -307,13 +167,9 @@ def load_image(image_path):
         original_rgb: original image as numpy array, H x W x 3
         model_input: normalized tensor, 1 x 3 x 240 x 384
     """
-
     image = Image.open(image_path).convert("RGB")
-
     original_rgb = np.asarray(image).copy()
-
     model_input = TRANSFORM(image).unsqueeze(0)
-
     return original_rgb, model_input
 
 
@@ -321,13 +177,10 @@ def resize_for_overlay(original_rgb, target_size):
     """
     Resize the original image to the model/heatmap resolution so
     heatmaps and peak coordinates line up exactly.
-
     target_size = (H, W)
     """
     h, w = target_size
-
     image = Image.fromarray(original_rgb)
-
     image = image.resize(
         (w, h),
         Image.Resampling.BILINEAR
@@ -355,16 +208,13 @@ def get_heatmap_peaks(heatmaps):
 
     for k in range(heatmaps.shape[0]):
         heatmap = heatmaps[k]
-
         flat_index = np.argmax(heatmap)
-
         y, x = np.unravel_index(
             flat_index,
             heatmap.shape
         )
 
         peak_value = float(heatmap[y, x])
-
         peaks.append(
             (int(x), int(y), peak_value)
         )
@@ -716,6 +566,42 @@ def save_visualizations(
     }
 
 
+def save_keypoint_predictions(
+    output_path,
+    image_name,
+    peaks,
+    visibility_probs,
+    image_size_wh,
+):
+    """Save final keypoint coordinates and visibility values to JSON."""
+
+    output_path = Path(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    keypoints = []
+
+    for (x, y, peak_value), vis_prob in zip(peaks, visibility_probs):
+        keypoints.append({
+            "x": float(x),
+            "y": float(y),
+            "heatmap_peak": float(peak_value),
+            "visibility": float(vis_prob),
+        })
+
+    payload = {
+        "image_name": image_name,
+        "image_size_wh": [int(image_size_wh[0]), int(image_size_wh[1])],
+        "keypoints": keypoints,
+    }
+
+    json_path = output_path / f"{image_name}_keypoints.json"
+
+    with json_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+    return json_path
+
+
 # ============================================================
 # Run inference on one image
 # ============================================================
@@ -893,6 +779,14 @@ def main():
                 image_name=image_name,
             )
 
+            keypoints_path = save_keypoint_predictions(
+                output_path=output_dir,
+                image_name=image_name,
+                peaks=peaks,
+                visibility_probs=visibility_probs,
+                image_size_wh=(original_rgb.shape[1], original_rgb.shape[0]),
+            )
+
             # Print predictions in image coordinates.
             # These coordinates are in the resized 240x384
             # model/heatmap coordinate system.
@@ -918,6 +812,10 @@ def main():
             print(
                 f"  Saved combined: "
                 f"{paths['combined']}"
+            )
+            print(
+                f"  Saved keypoints: "
+                f"{keypoints_path}"
             )
             print()
 
