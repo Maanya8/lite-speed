@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torchvision.transforms as T
 from PIL import Image
-from final_train import MobileNetMultiTaskNet
+from train_multitask import MobileNetMultiTaskNet
 
 # ============================================================
 # Configuration

@@ -40,7 +40,7 @@ import torchvision.models as models
 import torchvision.transforms as T
 from PIL import Image
 import matplotlib.pyplot as plt
-from final_train import MobileNetMultiTaskNet
+from train_multitask import MobileNetMultiTaskNet
 
 
 # ============================================================
