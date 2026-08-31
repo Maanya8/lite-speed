@@ -7,6 +7,8 @@ This project trains a deep learning model to estimate keypoint locations on a sa
 
 The model is trained on precomputed Gaussian heatmaps and visibility labels generated from the satellite’s 3D geometry.
 
+SPEED Dataset Download Link - https://zenodo.org/records/6327547
+
 ## Overview
 
 The repository contains:

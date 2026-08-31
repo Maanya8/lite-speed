@@ -13,9 +13,9 @@ from verify import verify, visualize_heatmap
 
 
 
-images_dir = Path(r"..\speed\speed\images\train")
-labels_path = Path(r"..\speed\speed\train.json")
-heatmaps_dir = Path(r"..\speed\heatmaps\train")
+images_dir = Path(r".\speed\speed\images\train") 
+labels_path = Path(r".\speed\speed\train.json") 
+heatmaps_dir = Path(r".\speed\heatmaps\train") 
 heatmaps_dir.mkdir(parents=True, exist_ok=True)
 visibility_json_path = heatmaps_dir / "visibility.json"
 camera_path = Path(__file__).with_name("camera.json")

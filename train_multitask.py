@@ -60,9 +60,9 @@ from torch.utils.data import Dataset, DataLoader
 class Config:
 
     # --- data paths ---
-    image_dir: str = "../speed/speed/images/train"
-    heatmap_dir: str = "../speed/heatmaps/train"
-    visibility_json: str = "../speed/heatmaps/train/visibility.json"
+    image_dir: str = "./speed/speed/images/train"
+    heatmap_dir: str = "./speed/heatmaps/train"
+    visibility_json: str = "./speed/heatmaps/train/visibility.json"
     checkpoint_dir: str = "./checkpoints"
 
     # --- data shape ---

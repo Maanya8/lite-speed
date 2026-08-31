@@ -18,7 +18,7 @@ NUM_KEYPOINTS = 11
 CHECKPOINT_PATH = "./checkpoints/best_model.pt"
 
 OUTPUT_DIR = "submission_results"
-INPUT_DIR = "../speed/speed/images/real_test"
+INPUT_DIR = "./speed/speed/images/real_test" 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 

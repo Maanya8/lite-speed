@@ -97,7 +97,7 @@ points_2d = 0.2*points_2d #resize, divide by 5
 # ---------------------------------------------------------
 # STEP 5: Load the image and draw the keypoints on it
 # ---------------------------------------------------------
-img = cv2.imread(f"../speed/speed/images/real/{filename}")   
+img = cv2.imread(f"./speed/speed/images/real/{filename}")   
 img = cv2.resize(img, None, fx=0.2, fy=0.2, interpolation=cv2.INTER_AREA) #resize, divide by 5
 #interpolation by INTER AREA produces best results compare to other techniques
 # adjust path to where your images are stored

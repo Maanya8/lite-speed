@@ -49,7 +49,7 @@ def verify(filename, points_2d, scaling):
 
     # Keep the same image-location logic used in visualize.py.
     image_path = os.path.join(
-        "../speed/speed/images/train",
+        "./speed/speed/images/train",
         filename,
     )
 
