@@ -13,6 +13,11 @@ import torchvision.transforms as T
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+
 
 # ============================================================
 # 1. Config -- every knob you asked for, in one place
@@ -24,7 +29,7 @@ class Config:
     image_dir: str = "./speed/speed/images/train"
     heatmap_dir: str = "./speed/heatmaps/train"
     visibility_json: str = "./speed/heatmaps/train/visibility.json"
-    checkpoint_dir: str = "./checkpoints"
+    checkpoint_dir: str = "./checkpoints_single"
 
     # --- data shape ---
     num_keypoints: int = 11
@@ -53,9 +58,6 @@ class Config:
     lr_finetune: float = 1e-4      # LR after unfreezing (whole network)
     weight_decay: float = 1e-4
 
-    # --- multi-task loss ---
-    vis_loss_weight: float = 0.0005   # weight applied to the visibility BCE loss term
-
     # --- early stopping ---
     early_stopping_patience: int = 8
 
@@ -63,7 +65,12 @@ class Config:
     resume: bool = False           # if True, resume from checkpoint_dir/last_checkpoint.pt if it exists
 
     # --- logging ---
-    verbose_per_keypoint: bool = False  # print per-keypoint pixel error / precision / recall / F1 each epoch
+    verbose_per_keypoint: bool = False  # print per-keypoint pixel error each epoch
+
+    # --- visualization ---
+    visualize_every_epoch: bool = True   # save a heatmap-over-image overlay figure after every epoch
+    num_vis_samples: int = 4             # how many fixed validation images to visualize each epoch
+    vis_dir: str = "./checkpoints_single/visualizations"
 
     # --- misc ---
     num_workers: int = 4
@@ -78,7 +85,7 @@ def set_seed(seed: int):
 
 def parse_args() -> Config:
     cfg = Config()
-    parser = argparse.ArgumentParser(description="Train satellite keypoint heatmap + visibility model")
+    parser = argparse.ArgumentParser(description="Train satellite keypoint heatmap")
     for f in fields(cfg):
         default = getattr(cfg, f.name)
         arg_type = type(default) if default is not None else str
@@ -99,6 +106,10 @@ def parse_args() -> Config:
 class SatelliteKeypointDataset(Dataset):
     """
     Loads an image, its num_keypoints precomputed heatmaps, and its visibility vector.
+
+    Visibility is still loaded here (it's cheap and used to mask the heatmap
+    loss for occluded keypoints), but the model itself is single-task: it only
+    predicts heatmaps, no visibility classification head.
 
     image_ids: list of stems, e.g. "img000004" (no extension)
     """
@@ -193,13 +204,20 @@ def autodetect_heatmap_size(heatmap_dir, sample_image_id, num_keypoints=11):
         f"to auto-detect heatmap_height/heatmap_width."
     )
 
-class MobileNetMultiTaskNet(nn.Module):
+
+# ============================================================
+# 3. Model -- single task: heatmaps only, no visibility head
+# ============================================================
+class MobileNetKeypointNet(nn.Module):
     """
     MobileNetV2 backbone with an FPN/U-Net-style decoder: instead of decoding
     purely from the deepest (stride-32, ~8x12) feature map, this fuses in
     higher-resolution intermediate features via lateral skip connections
     (stride 4, 8, 16, 32), so fine spatial detail that would otherwise be
     discarded by the time the decoder sees it is preserved and used.
+
+    Single-task: outputs only the K heatmaps. There is no visibility
+    classification branch.
     """
 
     # (layer_index_in_mobilenet_v2.features, output_channels, stride) for the
@@ -240,11 +258,6 @@ class MobileNetMultiTaskNet(nn.Module):
             nn.Conv2d(fpn_channels, num_keypoints, kernel_size=1),
         )
 
-        # visibility head still pools the deepest raw backbone feature -- occlusion
-        # is a fairly global/semantic judgment, well suited to low-resolution features
-        deepest_channels = self.SKIP_LAYERS[self.deepest_idx][0]
-
-
     def forward(self, x):
         skip_feats = {}
         h = x
@@ -254,8 +267,6 @@ class MobileNetMultiTaskNet(nn.Module):
                 skip_feats[i] = h
             if i == self.deepest_idx:
                 break
-
-        deep_feat = skip_feats[self.deepest_idx]
 
         sorted_idx = sorted(self.SKIP_LAYERS.keys(), reverse=True)  # [18, 13, 6, 3]
         fused = self.lateral_convs[str(sorted_idx[0])](skip_feats[sorted_idx[0]])
@@ -301,8 +312,7 @@ def weighted_heatmap_loss(pred, target, alpha=10.0):
 def masked_heatmap_loss(pred_heatmaps, target_heatmaps, visibility):
     """MSE over heatmap pixels, masked so occluded keypoints contribute zero gradient."""
     vis_mask = visibility.view(visibility.shape[0], visibility.shape[1], 1, 1)  # (B, K, 1, 1)
-    # loss_per_pixel = (pred_heatmaps - target_heatmaps) ** 2
-    loss_per_pixel = weighted_heatmap_loss(pred_heatmaps, target_heatmaps, alpha = 10.0)
+    loss_per_pixel = weighted_heatmap_loss(pred_heatmaps, target_heatmaps, alpha=10.0)
     masked_loss = loss_per_pixel * vis_mask
     num_visible = vis_mask.sum().clamp(min=1)
     return masked_loss.sum() / (num_visible * pred_heatmaps.shape[2] * pred_heatmaps.shape[3])
@@ -311,9 +321,7 @@ def masked_heatmap_loss(pred_heatmaps, target_heatmaps, visibility):
 # ============================================================
 # 5. Validation metrics
 #    - per-keypoint pixel error for visible keypoints
-#    - a heatmap "collapse" sanity check (mean predicted peak vs mean target peak) --
-#      catches the common failure mode where the network learns to output a
-#      near-flat heatmap everywhere instead of a sharp localized peak
+#    - heatmap "collapse" sanity checks (mean/per-kp peak, keypoint spread ratio)
 # ============================================================
 def soft_argmax_batch(heatmaps):
     """
@@ -361,7 +369,7 @@ def keypoint_spread_ratio(pred_coords, true_coords, eps=1e-6):
 @torch.no_grad()
 def evaluate(model, loader, device, num_keypoints):
     model.eval()
-    total_loss, total_hm, total_vis = 0.0, 0.0, 0.0
+    total_loss = 0.0  # FIX: was declared but never accumulated -> best_val_loss was always 0.0
 
     # accumulators for per-keypoint pixel error
     per_kp_pixel_error_sum = torch.zeros(num_keypoints, device=device)
@@ -379,13 +387,12 @@ def evaluate(model, loader, device, num_keypoints):
     # accumulator for the keypoint-spread-ratio collapse check
     total_spread_ratio, spread_ratio_min, n_spread = 0.0, float("inf"), 0
 
-    all_target_vis = []
-
     for images, target_hm, target_vis in loader:
         images, target_hm, target_vis = images.to(device), target_hm.to(device), target_vis.to(device)
         pred_hm = model(images)
 
         loss = masked_heatmap_loss(pred_hm, target_hm, target_vis)
+        total_loss += loss.item()  # FIX
 
         pred_coords = soft_argmax_batch(pred_hm)
         true_coords = soft_argmax_batch(target_hm)
@@ -415,17 +422,12 @@ def evaluate(model, loader, device, num_keypoints):
         spread_ratio_min = min(spread_ratio_min, spread.min().item())
         n_spread += spread.shape[0]
 
-
     n = len(loader)
-    all_pred_vis = torch.cat(all_pred_vis, dim=0)      # (N, K)
-    all_target_vis = torch.cat(all_target_vis, dim=0)  # (N, K)
-
 
     per_kp_pixel_error = (per_kp_pixel_error_sum / per_kp_visible_count.clamp(min=1)).cpu().tolist()
 
     return {
-        "val_loss": total_loss / n,
-        "val_hm_loss": total_hm / n,
+        "val_loss": total_loss / n,  # FIX: now a real, non-zero value
 
         "mean_pixel_error": sum(per_kp_pixel_error) / len(per_kp_pixel_error),
         "per_kp_pixel_error": per_kp_pixel_error,
@@ -442,7 +444,89 @@ def evaluate(model, loader, device, num_keypoints):
 
 
 # ============================================================
-# 6. Resumable-training checkpoint helpers
+# 6. Visualization -- predicted heatmap overlaid on the original image
+# ============================================================
+IMAGENET_MEAN = np.array([0.485, 0.456, 0.406])
+IMAGENET_STD = np.array([0.229, 0.224, 0.225])
+
+
+def _denormalize_image(img_tensor):
+    """img_tensor: (3, H, W) normalized. Returns (H, W, 3) uint8 RGB array."""
+    img = img_tensor.detach().cpu().numpy().transpose(1, 2, 0)  # (H, W, 3)
+    img = img * IMAGENET_STD + IMAGENET_MEAN
+    img = np.clip(img, 0, 1)
+    return (img * 255).astype(np.uint8)
+
+
+@torch.no_grad()
+def make_epoch_visualization(model, vis_images, vis_ids, device, epoch, save_path,
+                              image_size, alpha=0.45):
+    """
+    Renders a grid: one column per sample, showing original image with the
+    combined (max-across-keypoints) predicted heatmap overlaid in a jet
+    colormap, plus a marker at each keypoint's soft-argmax location.
+
+    vis_images: (N, 3, H, W) tensor, already normalized (same fixed samples every epoch)
+    vis_ids: list of image_id strings for titling
+    """
+    model.eval()
+    images = vis_images.to(device)
+    pred_hm = model(images)  # (N, K, Hh, Wh)
+    pred_coords = soft_argmax_batch(pred_hm)  # (N, K, 2), in heatmap pixel space
+
+    n = images.shape[0]
+    img_h, img_w = image_size
+    hm_h, hm_w = pred_hm.shape[-2], pred_hm.shape[-1]
+    scale_x, scale_y = img_w / hm_w, img_h / hm_h
+
+    fig, axes = plt.subplots(1, n, figsize=(4.5 * n, 4.5))
+    if n == 1:
+        axes = [axes]
+
+    for i in range(n):
+        img_np = _denormalize_image(images[i])  # (H, W, 3)
+
+        # combined heatmap: max over all keypoints, then normalize to [0, 1]
+        combined = pred_hm[i].amax(dim=0).clamp(min=0).cpu().numpy()  # (Hh, Wh)
+        cmax = combined.max()
+        if cmax > 1e-8:
+            combined = combined / cmax
+
+        ax = axes[i]
+        ax.imshow(img_np)
+        ax.imshow(combined, cmap=cm.jet, alpha=alpha, extent=(0, img_w, img_h, 0))
+
+        coords = pred_coords[i].cpu().numpy()
+        xs = coords[:, 0] * scale_x
+        ys = coords[:, 1] * scale_y
+        ax.scatter(xs, ys, c="white", edgecolors="black", s=25, linewidths=0.8)
+
+        ax.set_title(vis_ids[i], fontsize=9)
+        ax.axis("off")
+
+    fig.suptitle(f"Epoch {epoch + 1}: predicted heatmaps over image", fontsize=12)
+    fig.tight_layout()
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_path, dpi=110, bbox_inches="tight")
+    plt.close(fig)
+
+
+def get_fixed_visualization_batch(dataset, num_samples, seed=0):
+    """Picks a fixed set of sample indices (same images every epoch) so the
+    saved figures form a coherent before/after sequence you can flip through."""
+    rng = random.Random(seed)
+    n = len(dataset)
+    idxs = rng.sample(range(n), min(num_samples, n))
+    images, ids = [], []
+    for idx in idxs:
+        img, _hm, _vis = dataset[idx]
+        images.append(img)
+        ids.append(dataset.image_ids[idx])
+    return torch.stack(images, dim=0), ids
+
+
+# ============================================================
+# 7. Resumable-training checkpoint helpers
 # ============================================================
 def save_resume_checkpoint(path, epoch, model, optimizer, best_val_loss, epochs_without_improvement, cfg):
     """Saves everything needed to resume training exactly where it left off."""
@@ -475,7 +559,7 @@ def restore_rng_state(ckpt):
     random.setstate(ckpt["python_rng_state"])
 
 # ============================================================
-# 7. Training loop
+# 8. Training loop
 # ============================================================
 def train(cfg: Config):
     set_seed(cfg.seed)
@@ -506,7 +590,12 @@ def train(cfg: Config):
     val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False,
                              num_workers=cfg.num_workers, pin_memory=True)
 
-    model = MobileNetMultiTaskNet(
+    # fixed batch of validation images used for the per-epoch visualization,
+    # so every saved figure shows the same images (a coherent convergence sequence)
+    if cfg.visualize_every_epoch:
+        vis_images, vis_ids = get_fixed_visualization_batch(val_ds, cfg.num_vis_samples, seed=cfg.seed)
+
+    model = MobileNetKeypointNet(
         num_keypoints=cfg.num_keypoints,
         pretrained=cfg.pretrained_backbone,
         fpn_channels=cfg.fpn_channels,
@@ -570,14 +659,14 @@ def train(cfg: Config):
             if backbone_frozen:
                 model.freeze_backbone()  # re-assert BatchNorm eval() each epoch (model.train() above flips it back)
 
-            running_loss, running_hm, running_vis = 0.0, 0.0, 0.0
+            running_loss = 0.0
             for images, target_hm, target_vis in train_loader:
                 images = images.to(cfg.device)
                 target_hm = target_hm.to(cfg.device)
                 target_vis = target_vis.to(cfg.device)
 
                 optimizer.zero_grad()
-                pred_hm, pred_vis_logits = model(images)
+                pred_hm = model(images)
                 loss = masked_heatmap_loss(pred_hm, target_hm, target_vis)
 
                 loss.backward()
@@ -588,20 +677,12 @@ def train(cfg: Config):
             n_batches = len(train_loader)
             stage = "frozen" if backbone_frozen else "finetune"
             print(f"[{stage}] epoch {epoch+1}/{cfg.num_epochs} | "
-                  f"train_loss={running_loss/n_batches:.5f} "
-                  f"(hm={running_hm/n_batches:.5f}, vis={running_vis/n_batches:.5f})")
+                  f"train_loss={running_loss/n_batches:.5f} ")
 
-            val_metrics = evaluate(model, val_loader, cfg.device, cfg.vis_loss_weight, cfg.num_keypoints)
+            val_metrics = evaluate(model, val_loader, cfg.device, cfg.num_keypoints)
 
-            print(f"           val_loss={val_metrics['val_loss']:.5f} "
-                  f"(hm={val_metrics['val_hm_loss']:.5f}, vis={val_metrics['val_vis_loss']:.5f})")
-            print(f"           mean_pixel_error={val_metrics['mean_pixel_error']:.2f}px | "
-                  f"vis_acc={val_metrics['vis_accuracy']:.4f} "
-                  f"precision={val_metrics['vis_precision']:.4f} "
-                  f"recall={val_metrics['vis_recall']:.4f} "
-                  f"f1={val_metrics['vis_f1']:.4f} "
-                  f"(tp={val_metrics['vis_confusion']['tp']:.0f} fp={val_metrics['vis_confusion']['fp']:.0f} "
-                  f"fn={val_metrics['vis_confusion']['fn']:.0f} tn={val_metrics['vis_confusion']['tn']:.0f})")
+            print(f"           val_loss={val_metrics['val_loss']:.5f}")
+            print(f"           mean_pixel_error={val_metrics['mean_pixel_error']:.2f}px")
             print(f"           mean_heatmap_peak: pred={val_metrics['mean_pred_heatmap_peak']:.4f} "
                   f"vs target={val_metrics['mean_target_heatmap_peak']:.4f} "
                   f"{'<-- WARNING: predicted peaks are collapsing toward 0, check for vanishing signal' if val_metrics['mean_pred_heatmap_peak'] < 0.1 * val_metrics['mean_target_heatmap_peak'] else ''}")
@@ -635,13 +716,19 @@ def train(cfg: Config):
             if cfg.verbose_per_keypoint:
                 print("           per-keypoint pixel error (px) / peak (pred vs target):")
                 for k, err in enumerate(val_metrics["per_kp_pixel_error"]):
-                    m = val_metrics["per_kp_vis_metrics"][k]
                     p_peak = val_metrics["per_kp_pred_peak"][k]
                     t_peak = val_metrics["per_kp_target_peak"][k]
                     print(f"             kp{k:02d}: pixel_error={err:6.2f} | "
-                          f"vis_acc={m['accuracy']:.3f} precision={m['precision']:.3f} "
-                          f"recall={m['recall']:.3f} f1={m['f1']:.3f} | "
                           f"peak: pred={p_peak:.3f} vs target={t_peak:.3f}")
+
+            # --- per-epoch visualization: predicted heatmap over the original image ---
+            if cfg.visualize_every_epoch:
+                vis_save_path = Path(cfg.vis_dir) / f"epoch_{epoch+1:03d}.png"
+                make_epoch_visualization(
+                    model, vis_images, vis_ids, cfg.device, epoch, vis_save_path,
+                    image_size=(cfg.image_height, cfg.image_width),
+                )
+                print(f"           -> saved visualization to {vis_save_path}")
 
             if val_metrics["val_loss"] < best_val_loss:
                 best_val_loss = val_metrics["val_loss"]
@@ -681,5 +768,3 @@ if __name__ == "__main__":
     for k, v in asdict(config).items():
         print(f"  {k}: {v}")
     train(config)
-
-
